@@ -1,2 +1,3 @@
-# rfenc_encryption_program
-An encryption program written in Rust for GNU/Linux operating systems
+# rfenc - <b>R</b>ust <b>F</b>ile <b>ENC</b>ryption
+
+Fast, authenticated file encryption for GNU/Linux, written in Rust.
