@@ -19,14 +19,6 @@ zeroize = "1"
 eframe = { version = "0.29", optional = true }
 rfd = { version = "0.15", optional = true }
 
-[features]
-gui = ["dep:eframe", "dep:rfd"]
-
-[[bin]]
-name = "rfenc-gui"
-path = "src/gui.rs"
-required-features = ["gui"]
-
 [profile.release]
 lto = true
 codegen-units = 1
