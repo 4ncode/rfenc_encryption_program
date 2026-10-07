@@ -53,5 +53,5 @@ impl Strength {
 pub fn estimate_bits(pw: &str) -> f64 {
     let mut pool = 0u32;
     if pw.bytes().any(|c| c.is_ascii_lowercase()) {
-        pool += LOWER.len() as u32;
+        pool += 26;
     }
