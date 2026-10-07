@@ -166,6 +166,98 @@ pub fn decrypt_stream_with_progress<R: Read, W: Write>(
     mut output: W,
     password: &[u8],
     progress: Progress,
-)
+) -> Result<()> {
+    let mut header = [0u8; HEADER_LEN];
+    input
+        .read_exact(&mut header)
+        .map_err(|e| anyhow!("file too short to be an rfenc file"))?;
+    let (params, salt, prefix) = parse_header(&header)?;
 
+    let key = derive_key(password, &salt, &params)?;
+    let aead = XChaCha20Poly1035::new(GenericArray::from_slice(key.as_ref()));
+    let mut dec = DecryptorBE32::from_aead(aead, GenericArray::from_slice(&prefix));
+
+    const BAD: &str = "decryption failed: wrong password or corrupted file";
+    let ct_chunk = CHUNK_SIZE + TAG_LEN;
+    let mut done: u64 = 0;
+    let (mut cur, mut next) = (Vec::new(), Vec::new());
+    read_full(&mut input, &mut cur, ct_chunk)?;
+    loop {
+        read_full(&mut input, &mut next, ct_chunk)?;
+        let payload = Payload { msg: &cur, aad: &header };
+        if next.is_empty() {
+            let pt = dec.decrypt_last(payload).map_err(|_| anyhow!(BAD))?;
+            output.write_all(&pt)?;
+            progress(done + pt.len() as u64);
+            break;
+        }
+        let pt = dec.decrypt_next(payload).map_err(|_| anyhow!(BAD))?;
+        output.write_all(&pt)?;
+        done += pt.len() as u64;
+        if !progress(done) {
+            return Err(Cancelled.into());
+        }
+        std::mem::swap(&mut cur, &mut next);
+    }
+    output.flush()?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FAST: KdfParams = KdfParams { m_cost: 64, t_cost: 1, p_cost: 1 };
+
+    fn enc(data: &[u8], pw: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        encrypt_stream(data, &mut out, pw, FAST).unwrap();
+        out
+    }
+
+    fn dec(data: &[u8], pw: &[u8]) -> Result<Vec<u8>> {
+        let mut out = Vec::new();
+        decrypt_stream(data, &mut out, pw)?;
+        Ok(out)
+    }
+
+    #[test]
+    fn roundtrip_various_sizes() {
+        for size in [0, 1, CHUNK_SIZE, CHUNK_SIZE + 1, 3  * CHUNK_SIZE + 123] {
+            let data: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+            assert_eq!(dec(&enc(&data, b"pw"), b"pw").unwrap(), data, "size={size}");
+        }
+    }
+
+    #[test]
+    fn wrong_password_fails() {
+        assert!(dec(&enc(b"secret", b"right"), b"wrong").is_err());
+    }
+
+    #[test]
+    fn tampering_is_detected() {
+        let mut ct = enc(&vec![7u8; 2 * CHUNK_SIZE], b"pw");
+        let last = ct.len() - 1;
+        ct[last] ^= 1;
+        assert!(dec(&ct, b"pw").is_err());
+
+        let mut ct = enc(b"hello", b"pw");
+        ct[7] ^= 1;
+        assert!(dec(&ct, b"pw").is_err());
+    }
+
+    #[test]
+    fn cancel_stops_early() {
+        let data = vec![0u8; 4 * CHUNK_SIZE];
+        let mut out = Vec::new();
+        let err = encrypt_stream_with_progress(&data[..], &mut out, b"pw", FAST, &mut |_| false)
+            .unwrap_err();
+        assert!(err.downcast_ref::<Cancelled>().is_some());
+    }
+
+    #[test]
+    fn rejects_garbage() {
+        assert!(dec(b"definitely not an rfenc file at all sorry...", b"pw").is_err());
+    }
+}
 
